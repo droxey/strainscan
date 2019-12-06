@@ -15,8 +15,8 @@ limitations under the License.
 */
 package main
 
-import "strainscraper/cmd"
+import "github.com/droxey/strainscraper/cmd"
 
 func main() {
-  cmd.Execute()
+	cmd.Execute()
 }
