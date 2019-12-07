@@ -1,6 +1,6 @@
 
-# Created by https://www.gitignore.io/api/go,godot
-# Edit at https://www.gitignore.io/?templates=go,godot
+# Created by https://www.gitignore.io/api/macos,go
+# Edit at https://www.gitignore.io/?templates=macos,go
 
 ### Go ###
 # Binaries for programs and plugins
@@ -23,18 +23,9 @@
 /vendor/
 /Godeps/
 
-### Godot ###
+# End of https://www.gitignore.io/api/go
 
-# Godot-specific ignores
-.import/
-export.cfg
-export_presets.cfg
-
-# Mono-specific ignores
-.mono/
-
-# End of https://www.gitignore.io/api/go,godot
-
-.DS_Store
-.vscode
-strainscraper
+strainscrape
+*.json
+*.db
+.cache

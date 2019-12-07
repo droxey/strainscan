@@ -4,61 +4,113 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
+	"time"
 
-	"github.com/droxey/strainscraper/models"
+	"github.com/droxey/strainscrape/models"
 	"github.com/gocolly/colly"
-	"github.com/gosimple/slug"
+	"github.com/gocolly/colly/extensions"
+	"github.com/gocolly/colly/queue"
+	// "github.com/gocolly/colly/debug"
 	. "github.com/logrusorgru/aurora"
 	"github.com/spf13/cobra"
 )
 
-var scraper = &cobra.Command{
-	Use:   "scrape [strain name]",
-	Short: "",
-	Long:  ``,
-	Run: func(cmd *cobra.Command, args []string) {
-		strainSlug := slug.Make(args[0])
-		strainURL := "https://www.cannaconnection.com/strains/" + strainSlug
-		strainData := make([]*models.Strain, 0)
+const (
+	fileName        = "results.json"
+	maxDepth        = 2
+	debugging       = false
+	baseURL         = "https://www.cannaconnection.com/strains?show_char="
+	numberOfLetters = 26
+	threads         = 4
+	sep             = " "
+)
 
-		c := colly.NewCollector()
+func scrapeAll(cmd *cobra.Command, args []string) {
+	startTime := time.Now()
+	alphabet := LowercaseAlphabet(numberOfLetters)
+	strainPages := make(map[string]*models.Strain, 0)
+	c := colly.NewCollector(
+		colly.MaxDepth(maxDepth),
+		colly.Async(true),
+		colly.CacheDir("./.cache"),
+	)
 
-		c.OnHTML(".product .post-content", func(e *colly.HTMLElement) {
-			newStrain := &models.Strain{
-				Features: make([]*models.Feature, 0),
-				Parents:  new(models.Parents),
-			}
+	extensions.RandomUserAgent(c)
+	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: threads})
+	c.WithTransport(&http.Transport{
+		DisableKeepAlives: true,
+	})
 
-			e.Unmarshal(newStrain)
-			strainData = append(strainData, newStrain)
-		})
+	q, _ := queue.New(threads, &queue.InMemoryQueueStorage{MaxSize: 10000})
 
-		c.OnHTML(".data-sheet .feature-wrapper", func(e *colly.HTMLElement) {
-			feature := &models.Feature{}
-			e.Unmarshal(feature)
-			strainData[0].Features = append(strainData[0].Features, feature)
-		})
+	c.OnRequest(func(r *colly.Request) {
+		r.Headers.Set("User-Agent", RandomString())
+	})
 
-		c.OnHTML(".data-sheet .multifeature-wrapper:first", func(e *colly.HTMLElement) {
-			p := &models.Parents{}
-			e.Unmarshal(p)
-			strainData[0].Parents = p
-		})
+	c.OnError(func(r *colly.Response, err error) {
+		log.Println("[ERR] ", r.Request.URL, "\t", r.StatusCode, "\n\tError:\n\t", err)
+	})
 
-		err := c.Visit(strainURL)
-		if err != nil {
-			fmt.Printf("%s '%s' could not be found. Please check your spelling and try again.\n", White("[ERROR]").Bold().BgRed(), Red(args[0]).Bold())
-			fmt.Printf("%s URL visited: %s", White("[DEBUG]").Bold().BgBlue(), Yellow(strainURL))
-			os.Exit(1)
+	c.OnHTML(".product .post-content", func(e *colly.HTMLElement) {
+
+	})
+
+	c.OnHTML("#strains_page ul.strains-list li a", func(e *colly.HTMLElement) {
+		s := &models.Strain{
+			Name:     e.Text,
+			Features: make([]*models.Feature, 0),
+			Parents:  new(models.Parents),
+			URL:      e.Attr("href"),
 		}
 
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(strainData)
-	},
+		strainPages[s.Name] = s
+		q.AddURL(s.URL)
+	})
+
+	// c.OnHTML(".data-sheet .feature-wrapper", func(e *colly.HTMLElement) {
+	// 	feature := &models.Feature{}
+	// 	e.Unmarshal(feature)
+	// 	feature.Value = strings.Title(strings.ReplaceAll(feature.Value, "-", " "))
+	// 	strainPages[0].Features = append(strainPages[0].Features, feature)
+
+	// })
+
+	// c.OnHTML(".data-sheet .multifeature-wrapper:first", func(e *colly.HTMLElement) {
+	// 	p := &models.Parents{}
+	// 	e.Unmarshal(p)
+	// 	p.First = strings.Title(strings.ReplaceAll(p.First, "-", " "))
+	// 	p.Last = strings.Title(strings.ReplaceAll(p.Last, "-", " "))
+	// 	strainPages[0].Parents = p
+	// })
+
+	CreateUI(sep)
+	for i := range alphabet {
+		pageURL := baseURL + alphabet[i]
+		c.Visit(pageURL)
+		c.Wait()
+		UpdateUI(sep)
+	}
+
+	output, _ := json.MarshalIndent(strainPages, "", "  ")
+	ioutil.WriteFile(fileName, output, 0644)
+
+	diff := time.Now().Sub(startTime).Seconds()
+	fmt.Println(Sprintf("\n\n%s %d strains found in %2.f seconds.", Gray(1-1, "[DONE]").BgGray(24-1), Green(len(strainPages)).Bold(), Green(diff).Bold()))
+	os.Exit(1)
 }
 
 func init() {
-	rootCmd.AddCommand(scraper)
+	var listCmd = &cobra.Command{
+		Use:   "list",
+		Short: "",
+		Long:  ``,
+		// Use the function reference instead of a pass-through function for better testability.
+		Run: scrapeAll,
+	}
+
+	rootCmd.AddCommand(listCmd)
 }
