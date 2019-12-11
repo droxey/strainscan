@@ -1,4 +1,4 @@
-# strainscrape
+# strainscan
 
 ### Table of Contents
 

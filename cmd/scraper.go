@@ -8,13 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/droxey/strainscrape/models"
+	"github.com/droxey/strainscan/models"
 	"github.com/gocolly/colly"
 	"github.com/gocolly/colly/extensions"
 	"github.com/gocolly/colly/queue"
-	// "github.com/gocolly/colly/debug"
 	. "github.com/logrusorgru/aurora"
 	"github.com/spf13/cobra"
 )
@@ -35,7 +35,7 @@ func scrapeAll(cmd *cobra.Command, args []string) {
 	strainPages := make(map[string]*models.Strain, 0)
 	c := colly.NewCollector(
 		colly.MaxDepth(maxDepth),
-		colly.Async(true),
+		colly.Async(false),
 		colly.CacheDir("./.cache"),
 	)
 
@@ -55,37 +55,42 @@ func scrapeAll(cmd *cobra.Command, args []string) {
 		log.Println("[ERR] ", r.Request.URL, "\t", r.StatusCode, "\n\tError:\n\t", err)
 	})
 
-	c.OnHTML(".product .post-content", func(e *colly.HTMLElement) {
+	c.OnHTML("meta", func(e *colly.HTMLElement) {
+		url := e.Request.URL.String()
+		if !strings.Contains(url, "/strains/") {
+			return
+		}
 
+		if e.Attr("property") == "og:description" {
+			strainPages[url].Description = e.Attr("content")
+		}
+
+		if e.Attr("property") == "og:image" {
+			strainPages[url].Image = e.Attr("content")
+		}
+	})
+
+	c.OnHTML(".product .post-content", func(e *colly.HTMLElement) {
+		url := e.Request.URL.String()
+		s := strainPages[url]
+
+		parentSelector := "div.product-top > div.pb-right-column > div > div > div:nth-child(2) > div.multi-feature.feature-value"
+		parentFirst := strings.Trim(e.DOM.Find(parentSelector+".first a").Text(), " ")
+		parentLast := strings.Trim(e.DOM.Find(parentSelector+".last a").Text(), " ")
+		s.Parents = append(s.Parents, parentFirst)
+		s.Parents = append(s.Parents, parentLast)
 	})
 
 	c.OnHTML("#strains_page ul.strains-list li a", func(e *colly.HTMLElement) {
+		name := e.Text
+		url := e.Attr("href")
 		s := &models.Strain{
-			Name:     e.Text,
-			Features: make([]*models.Feature, 0),
-			Parents:  new(models.Parents),
-			URL:      e.Attr("href"),
+			Name:    name,
+			Parents: make([]string, 0),
 		}
-
-		strainPages[s.Name] = s
-		q.AddURL(s.URL)
+		strainPages[url] = s
+		q.AddURL(url)
 	})
-
-	// c.OnHTML(".data-sheet .feature-wrapper", func(e *colly.HTMLElement) {
-	// 	feature := &models.Feature{}
-	// 	e.Unmarshal(feature)
-	// 	feature.Value = strings.Title(strings.ReplaceAll(feature.Value, "-", " "))
-	// 	strainPages[0].Features = append(strainPages[0].Features, feature)
-
-	// })
-
-	// c.OnHTML(".data-sheet .multifeature-wrapper:first", func(e *colly.HTMLElement) {
-	// 	p := &models.Parents{}
-	// 	e.Unmarshal(p)
-	// 	p.First = strings.Title(strings.ReplaceAll(p.First, "-", " "))
-	// 	p.Last = strings.Title(strings.ReplaceAll(p.Last, "-", " "))
-	// 	strainPages[0].Parents = p
-	// })
 
 	CreateUI(sep)
 	for i := range alphabet {
@@ -95,11 +100,14 @@ func scrapeAll(cmd *cobra.Command, args []string) {
 		UpdateUI(sep)
 	}
 
+	q.Run(c)
+
+	fmt.Println("\n---\n[FILE] Outputting file.")
 	output, _ := json.MarshalIndent(strainPages, "", "  ")
 	ioutil.WriteFile(fileName, output, 0644)
 
 	diff := time.Now().Sub(startTime).Seconds()
-	fmt.Println(Sprintf("\n\n%s %d strains found in %2.f seconds.", Gray(1-1, "[DONE]").BgGray(24-1), Green(len(strainPages)).Bold(), Green(diff).Bold()))
+	fmt.Println(Sprintf("%s %d strains found in %2.f seconds.", Gray(1-1, "[DONE]").BgGray(24-1), Green(len(strainPages)).Bold(), Green(diff).Bold()))
 	os.Exit(1)
 }
 

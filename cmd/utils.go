@@ -36,7 +36,7 @@ func CreateUI(sep string) {
 		stats := sep + alphabet[i] + sep
 		display = append(display, stats)
 	}
-	fmt.Println(strings.Join(display, ""))
+	fmt.Println("\n" + strings.Join(display, ""))
 }
 
 func UpdateUI(sep string) {

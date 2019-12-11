@@ -1,4 +1,4 @@
-module github.com/droxey/strainscrape
+module github.com/droxey/strainscan
 
 go 1.13
 
