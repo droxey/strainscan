@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,99 +17,148 @@ import (
 	"github.com/gocolly/colly/extensions"
 	"github.com/gocolly/colly/queue"
 	. "github.com/logrusorgru/aurora"
+	cmap "github.com/orcaman/concurrent-map"
 	"github.com/spf13/cobra"
 )
 
 const (
-	fileName        = "results.json"
-	maxDepth        = 2
-	debugging       = false
-	baseURL         = "https://www.cannaconnection.com/strains?show_char="
-	numberOfLetters = 26
-	threads         = 4
-	sep             = " "
+	visitExternalLinks  = false
+	debugging           = true
+	fileName            = "results.json"
+	queryParams         = "?q=&p="
+	baseURL             = "https://sdb.openthc.org"
+	searchURL           = baseURL + "/search"
+	strainURL           = baseURL + "/strain/"
+	minValidity         = 2
+	minStrainNameLength = 2
+	threads             = 8
+	maxDepth            = 3
+	filePermissions     = 0644
+	runAsync            = true
 )
 
 func scrapeAll(cmd *cobra.Command, args []string) {
 	startTime := time.Now()
-	alphabet := LowercaseAlphabet(numberOfLetters)
-	strainPages := make(map[string]*models.Strain, 0)
+	strainMap := cmap.New()
+	hasLastPage := false
+	firstPageURL := searchURL + queryParams + "1"
+	strainCount := 0
+
+	c := setupCollector()
+	q, _ := queue.New(threads, &queue.InMemoryQueueStorage{MaxSize: 10000})
+
+	// OpenTHC (List): Get Total # Of Pages
+	c.OnHTML("body > div > div.page-list-control-wrap > div > a:nth-child(20)", func(e *colly.HTMLElement) {
+		if hasLastPage {
+			return
+		}
+
+		lastPageButtonURL := e.Attr("href")
+		lastPageStr := strings.Replace(lastPageButtonURL, "/search"+queryParams, "", 1)
+		lastPageNumber, _ := strconv.Atoi(lastPageStr)
+
+		for i := 2; i <= lastPageNumber; i++ {
+			url := searchURL + queryParams + strconv.Itoa(i)
+			q.AddURL(url)
+		}
+
+		q.Run(c)
+		hasLastPage = true
+	})
+
+	// OpenTHC (List): Get Data From Search Table
+	c.OnHTML("body > div > div.table-responsive.mt-4 > table > tbody > tr", func(e *colly.HTMLElement) {
+		s := &models.Strain{}
+		e.Unmarshal(s)
+
+		s.URL = baseURL + s.URL
+		validity, _ := strconv.Atoi(s.Validity)
+
+		isCleanURL := strings.Contains(s.URL, "/strain/") && (len(s.Slug) >= minStrainNameLength)
+		isValidURL := validity >= minValidity
+		if isValidURL && isCleanURL {
+			strainCount++
+			strainMap.Set(s.Slug, s)
+			c.Visit(s.URL)
+		}
+	})
+
+	// OpenTHC (Details): Get External Links From Strain Page
+	c.OnHTML("body > div > section:nth-child(3) > div", func(e *colly.HTMLElement) {
+		l := &models.StrainLinks{}
+		e.Unmarshal(l)
+
+		links := []string{l.LeaflyURL, l.AllBudURL, l.WikileafURL, l.KannapediaURL}
+		s := GetStrainForURL(strainMap, e.Request.URL.String())
+
+		for _, link := range links {
+			isExtLink := !strings.HasPrefix(link, baseURL) && strings.HasPrefix(link, "http")
+			if isExtLink {
+				err := c.Visit(link)
+				if err != nil {
+					fmt.Println(Sprintf(Red(err.Error())))
+				} else {
+					s.Links = append(s.Links, link)
+				}
+			}
+		}
+	})
+
+	fmt.Println(Bold("\nStarting scan...\n"))
+	c.Visit(firstPageURL)
+	c.Wait()
+
+	output, _ := json.MarshalIndent(strainMap, "", "  ")
+	ioutil.WriteFile(fileName, output, filePermissions)
+
+	fmt.Println(
+		Sprintf("%s %d strains found in %2.2f minutes and saved to %s.",
+			Inverse("[DONE]").Bold(),
+			Green(strainCount).Bold(),
+			Green(time.Now().Sub(startTime).Minutes()).Bold(),
+			Blue(fileName).Bold()))
+	os.Exit(1)
+}
+
+func setupCollector() *colly.Collector {
 	c := colly.NewCollector(
 		colly.MaxDepth(maxDepth),
-		colly.Async(false),
+		colly.Async(runAsync),
 		colly.CacheDir("./.cache"),
 	)
 
 	extensions.RandomUserAgent(c)
-	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: threads})
+	c.Limit(&colly.LimitRule{
+		DomainGlob:  "*",
+		Parallelism: threads,
+		RandomDelay: 5 * time.Second})
+
 	c.WithTransport(&http.Transport{
 		DisableKeepAlives: true,
+		DialContext: (&net.Dialer{
+			Timeout: 20 * time.Second,
+		}).DialContext,
 	})
-
-	q, _ := queue.New(threads, &queue.InMemoryQueueStorage{MaxSize: 10000})
 
 	c.OnRequest(func(r *colly.Request) {
 		r.Headers.Set("User-Agent", RandomString())
+
+		if debugging {
+			fmt.Println(Sprintf("%s %s", Green("[REQ]"), r.URL.String()))
+		}
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
-		log.Println("[ERR] ", r.Request.URL, "\t", r.StatusCode, "\n\tError:\n\t", err)
-	})
-
-	c.OnHTML("meta", func(e *colly.HTMLElement) {
-		url := e.Request.URL.String()
-		if !strings.Contains(url, "/strains/") {
-			return
-		}
-
-		if e.Attr("property") == "og:description" {
-			strainPages[url].Description = e.Attr("content")
-		}
-
-		if e.Attr("property") == "og:image" {
-			strainPages[url].Image = e.Attr("content")
+		if debugging {
+			fmt.Println(Sprintf("%s %d %s: %s", Red("[ERR]"), Red(r.StatusCode).Bold(), Red(err.Error()).Bold(), r.Request.URL.String()))
 		}
 	})
 
-	c.OnHTML(".product .post-content", func(e *colly.HTMLElement) {
-		url := e.Request.URL.String()
-		s := strainPages[url]
+	return c
+}
 
-		parentSelector := "div.product-top > div.pb-right-column > div > div > div:nth-child(2) > div.multi-feature.feature-value"
-		parentFirst := strings.Trim(e.DOM.Find(parentSelector+".first a").Text(), " ")
-		parentLast := strings.Trim(e.DOM.Find(parentSelector+".last a").Text(), " ")
-		s.Parents = append(s.Parents, parentFirst)
-		s.Parents = append(s.Parents, parentLast)
-	})
-
-	c.OnHTML("#strains_page ul.strains-list li a", func(e *colly.HTMLElement) {
-		name := e.Text
-		url := e.Attr("href")
-		s := &models.Strain{
-			Name:    name,
-			Parents: make([]string, 0),
-		}
-		strainPages[url] = s
-		q.AddURL(url)
-	})
-
-	CreateUI(sep)
-	for i := range alphabet {
-		pageURL := baseURL + alphabet[i]
-		c.Visit(pageURL)
-		c.Wait()
-		UpdateUI(sep)
-	}
-
-	q.Run(c)
-
-	fmt.Println("\n---\n[FILE] Outputting file.")
-	output, _ := json.MarshalIndent(strainPages, "", "  ")
-	ioutil.WriteFile(fileName, output, 0644)
-
-	diff := time.Now().Sub(startTime).Seconds()
-	fmt.Println(Sprintf("%s %d strains found in %2.f seconds.", Gray(1-1, "[DONE]").BgGray(24-1), Green(len(strainPages)).Bold(), Green(diff).Bold()))
-	os.Exit(1)
+func log(msg string) {
+	fmt.Println(Sprintf("%s %s", White("[DEBUG]").BgGray(8-1), Blue(msg)))
 }
 
 func init() {
@@ -116,8 +166,7 @@ func init() {
 		Use:   "list",
 		Short: "",
 		Long:  ``,
-		// Use the function reference instead of a pass-through function for better testability.
-		Run: scrapeAll,
+		Run:   scrapeAll,
 	}
 
 	rootCmd.AddCommand(listCmd)

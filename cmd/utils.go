@@ -2,25 +2,16 @@
 package cmd
 
 import (
-	"fmt"
 	"math/rand"
 	"strings"
 
-	. "github.com/logrusorgru/aurora"
+	"github.com/droxey/strainscan/models"
+	cmap "github.com/orcaman/concurrent-map"
 )
-
-// LowercaseAlphabet generates a lowercase alphabet.
-func LowercaseAlphabet(numberOfLetters int) []string {
-	alphabet := make([]string, numberOfLetters)
-	for i := range alphabet {
-		letter := 'a' + byte(i)
-		alphabet[i] = string(letter)
-	}
-	return alphabet
-}
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
+// RandomString ...
 func RandomString() string {
 	b := make([]byte, rand.Intn(10)+10)
 	for i := range b {
@@ -29,16 +20,12 @@ func RandomString() string {
 	return string(b)
 }
 
-func CreateUI(sep string) {
-	alphabet := LowercaseAlphabet(26)
-	display := make([]string, 0)
-	for i := range alphabet {
-		stats := sep + alphabet[i] + sep
-		display = append(display, stats)
+// GetStrainForURL ...
+func GetStrainForURL(strainMap cmap.ConcurrentMap, url string) *models.Strain {
+	slug := strings.Replace(url, strainURL, "", 1)
+	if tmp, ok := strainMap.Get(slug); ok {
+		return tmp.(*models.Strain)
 	}
-	fmt.Println("\n" + strings.Join(display, ""))
-}
 
-func UpdateUI(sep string) {
-	fmt.Printf("%s", Gray(1-1, sep+" "+sep).BgGray(24-1))
+	return nil
 }
