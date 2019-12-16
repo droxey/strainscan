@@ -62,8 +62,8 @@ func scrapeAll(cmd *cobra.Command, args []string) {
 			q.AddURL(url)
 		}
 
-		q.Run(c)
 		hasLastPage = true
+		q.Run(c)
 	})
 
 	// OpenTHC (List): Get Data From Search Table
@@ -94,17 +94,13 @@ func scrapeAll(cmd *cobra.Command, args []string) {
 		for _, link := range links {
 			isExtLink := !strings.HasPrefix(link, baseURL) && strings.HasPrefix(link, "http")
 			if isExtLink {
-				err := c.Visit(link)
-				if err != nil {
-					fmt.Println(Sprintf(Red(err.Error())))
-				} else {
-					s.Links = append(s.Links, link)
-				}
+				s.Links = append(s.Links, link)
 			}
 		}
 	})
 
 	fmt.Println(Bold("\nStarting scan...\n"))
+
 	c.Visit(firstPageURL)
 	c.Wait()
 
